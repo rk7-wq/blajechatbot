@@ -20,8 +20,8 @@ from telegram.ext import (
 )
 
 # 👉 ВСТАВЬ СВОИ ДАННЫЕ
-TOKEN = "PASTE_YOUR_TOKEN_HERE"
-PUBLIC_URL = "https://YOUR-PROJECT.YOUR-LOGIN.replit.dev"  # точный адрес из браузера, без завершающего '/'
+TOKEN = "8343007271:AAEwJn8W4UbBqJn6uAOM5SMh_drGO25UMLI"
+PUBLIC_URL = "https://5f61e8cd-3ee4-4a5a-9fdb-191aca6e78d2-00-29qe9cvs7wgb4.riker.replit.dev"  # точный адрес из браузера, без завершающего '/'
 
 # ---------------- Flask (keep-alive + health) ----------------
 flask_app = Flask(__name__)
@@ -222,3 +222,4 @@ def main():
 if __name__ == "__main__":
     # pip install python-telegram-bot==21.8 flask
     main()
+
