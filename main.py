@@ -1,158 +1,160 @@
-# main.py — BlajeChatBot (Бот Модератор)
-# Требуется: python-telegram-bot==21.8, flask
-# Режим работы: polling (без вебхука), Flask используется для "/" и "/health".
-# Бот удаляет сообщения «от имени канала» и пишет предупреждение,
-# но разрешает писать от заданных каналов (например, @blajeru).
+# main.py — BlajeChatBot (модерация комментариев к каналу через webhook)
+# Требуется: python-telegram-bot==21.8, Flask
 
 import os
-import time
 import logging
-from threading import Thread
+from typing import Optional
 
-from flask import Flask
+from flask import Flask, request, jsonify
 from telegram import Update
+from telegram.constants import ParseMode
+from telegram.error import Forbidden, BadRequest
 from telegram.ext import (
-    Application,
-    ContextTypes,
-    MessageHandler,
-    filters,
+    Application, ApplicationBuilder, MessageHandler, ContextTypes, filters
 )
 
-# ----------------- Настройки и окружение -----------------
+# ---------- Конфиг ----------
+token = os.environ["token"]                     # <-- ключ в нижнем регистре
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
 
+# ID канала, от имени которого писать запрещаем.
+# По твоему логу это: blajeru -> -1001786114762
+ALLOWED_SENDER_CHAT_IDS = {-1001786114762}
+
+# Текст предупреждения
+WARNING_TEXT = (
+    "Сообщения **от имени канала** в этой группе запрещены и будут удаляться.\n"
+    "Пожалуйста, пишите **от своего личного профиля**.\n"
+    "Бот Модератор."
+)
+
+# Кулдаун на одно предупреждение в одном топике, сек
+WARN_COOLDOWN_SECONDS = 2
+
+# ---------- Логи ----------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("BlajeChatBot")
+log = logging.getLogger("BlajeChatBot")
 
-# TOKEN: обязателен. В Render мы использовали переменную окружения с ключом "token" (строчные!)
-TOKEN = os.environ.get("token")
-if not TOKEN:
-    raise RuntimeError(
-        "Переменная окружения 'token' не найдена. "
-        "Добавьте её в Render → Environment → Add Environment Variable."
-    )
+# ---------- Flask ----------
+flask_app = Flask(__name__)
 
-# PUBLIC_URL: не обязательно, просто логируем для наглядности
-PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://127.0.0.1:8080")
-PORT = int(os.environ.get("PORT", "8080"))
+# Очередь кулдауна по (chat_id, thread_id)
+_last_warn_time_by_topic: dict[tuple[int, Optional[int]], float] = {}
 
-# Каналы, которым разрешено писать «от имени канала».
-# По умолчанию разрешаем @blajeru (=-1001786114762). Можно расширить через ENV:
-# ALLOWED_SENDER_CHATS="-1001786114762,-1001234567890"
-ALLOWED_SENDER_CHAT_IDS = {-1001786114762}
-_env_allowed = os.environ.get("ALLOWED_SENDER_CHATS")
-if _env_allowed:
-    try:
-        extra_ids = {int(x.strip()) for x in _env_allowed.split(",") if x.strip()}
-        ALLOWED_SENDER_CHAT_IDS |= extra_ids
-    except Exception:
-        logger.warning("Не удалось распарсить ALLOWED_SENDER_CHATS, используем дефолтный набор.")
+# ---------- Telegram Application ----------
+application: Application = ApplicationBuilder().token(token).build()
 
-# Текст предупреждения
-WARNING_TEXT = (
-    "Сообщения от имени канала в этой группе запрещены и будут удаляться.\n"
-    "Пожалуйста, пишите от своего личного профиля.\n"
-    "Бот Модератор."
-)
-
-# Анти-спам предупреждений: интервал между предупреждениями в одном чате (сек)
-WARN_COOLDOWN_SECONDS = 2
-_last_warn_time_by_chat: dict[int, float] = {}
-
-# ----------------- Flask (keep-alive + health) -----------------
-
-def make_flask_app() -> Flask:
-    app = Flask(__name__)
-
-    @app.get("/")
-    def root():
-        return "BlajeChatBot работает!"
-
-    @app.get("/health")
-    def health():
-        return "ok"
-
-    return app
-
-flask_app = make_flask_app()
-
-# ----------------- Telegram handlers -----------------
-
-async def delete_and_warn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Удаляет сообщение, отправленное 'от имени канала' (если канал не в белом списке),
-    и пишет предупреждение в тот же чат/топик с анти-спам кулдауном."""
+async def mod_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удаляем сообщения, отправленные 'от имени канала' в группе-обсуждении канала
+       и отвечаем предупреждением в том же топике."""
     msg = update.effective_message
     if not msg:
         return
 
-    # Канальный пост в группе/супергруппе определяется по sender_chat
-    sc = msg.sender_chat
-    if not sc:
-        return  # обычный пользователь — пропускаем
+    chat = msg.chat
+    sender_chat = msg.sender_chat  # если сообщение от имени канала — это заполнено
+    thread_id = msg.message_thread_id
 
-    # Разрешённые каналы
-    if sc.id in ALLOWED_SENDER_CHAT_IDS:
-        logger.info("Сообщение от разрешённого канала (sender_chat_id=%s) — пропускаем.", sc.id)
+    # Диагностика
+    log.info(
+        "Update: chat_id=%s type=%s sender_chat_id=%s thread_id=%s text=%r",
+        chat.id, chat.type, getattr(sender_chat, "id", None), thread_id, msg.text or msg.caption
+    )
+
+    # интересуют только группы/супергруппы
+    if chat.type not in ("group", "supergroup"):
         return
 
-    # Пытаемся удалить «запрещённое» сообщение от имени канала
-    try:
-        await msg.delete()
-        logger.info("Удалено сообщение от канала (sender_chat_id=%s)", sc.id)
-    except Exception as e:
-        logger.warning("Не удалось удалить сообщение: %s", e)
-
-    # Анти-спам: предупреждение не чаще, чем раз в N секунд на чат
-    chat_id = msg.chat_id
-    now = time.time()
-    last = _last_warn_time_by_chat.get(chat_id, 0.0)
-    if now - last < WARN_COOLDOWN_SECONDS:
+    # если не от имени канала — ничего не делаем
+    if sender_chat is None:
         return
-    _last_warn_time_by_chat[chat_id] = now
 
-    # Пишем предупреждение в тот же чат. Если это топик — используем message_thread_id.
-    send_kwargs = {}
-    if getattr(msg, "is_topic_message", False) and getattr(msg, "message_thread_id", None) is not None:
-        send_kwargs["message_thread_id"] = msg.message_thread_id
+    # Если это канал (id < 0 и ~-100...), и он НЕ в разрешенных — удаляем
+    if sender_chat.id not in ALLOWED_SENDER_CHAT_IDS:
+        try:
+            await msg.delete()
+            log.info("Удалено сообщение от канала sender_chat_id=%s", sender_chat.id)
+        except Forbidden as e:
+            log.warning("Нет прав на удаление: %s", e)
+            return
+        except BadRequest as e:
+            log.warning("Не удалось удалить сообщение: %s", e)
+            return
 
+        # антииспам по топикам
+        import time
+        key = (chat.id, thread_id)
+        now = time.time()
+        last = _last_warn_time_by_topic.get(key, 0.0)
+        if now - last >= WARN_COOLDOWN_SECONDS:
+            _last_warn_time_by_topic[key] = now
+            try:
+                await context.bot.send_message(
+                    chat_id=chat.id,
+                    text=WARNING_TEXT,
+                    parse_mode=ParseMode.MARKDOWN,
+                    message_thread_id=thread_id,  # важно для комментариев (топиков)
+                )
+                log.info("Отправлено предупреждение в топик %s", thread_id)
+            except Forbidden as e:
+                log.warning("Нет прав на отправку сообщения: %s", e)
+            except BadRequest as e:
+                log.warning("Ошибка при отправке предупреждения: %s", e)
+
+# фильтр: любые сообщения/медиа/репосты в группах
+application.add_handler(MessageHandler(
+    filters.ChatType.GROUPS & (filters.ALL),
+    mod_handler
+))
+
+# ---------- Webhook endpoints ----------
+@flask_app.get("/health")
+def health():
+    return jsonify(ok=True)
+
+@flask_app.post(f"/telegram/{token}")
+def telegram_webhook():
+    """Точка входа для Telegram. Flask получает JSON и кладёт в очередь PTB."""
     try:
-        await context.bot.send_message(chat_id=chat_id, text=WARNING_TEXT, **send_kwargs)
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        application.update_queue.put_nowait(update)
     except Exception as e:
-        logger.warning("Не удалось отправить предупреждение: %s", e)
+        log.exception("Ошибка обработки апдейта: %s", e)
+    return "ok", 200
 
-def build_application() -> Application:
-    logger.info("Using PUBLIC_URL = %s", PUBLIC_URL)
-    app = Application.builder().token(TOKEN).build()
-
-    # Один универсальный обработчик на все типы сообщений — нам важно лишь sender_chat
-    app.add_handler(MessageHandler(filters.ALL, delete_and_warn))
-
-    return app
-
-async def run_tg_polling() -> None:
-    """Запуск Telegram-бота в режиме polling (без вебхука)."""
-    application = build_application()
-
-    # На всякий случай убираем вебхук (если был) и сбрасываем «хвосты»
+# ---------- Запуск ----------
+async def setup_webhook():
+    """Чистим вебхук и ставим новый на наш URL."""
+    if not PUBLIC_URL:
+        log.error("PUBLIC_URL не задан. Укажи его в Render → Environment.")
+        return
+    webhook_url = f"{PUBLIC_URL}/telegram/{token}"
     try:
         await application.bot.delete_webhook(drop_pending_updates=True)
-    except Exception:
-        pass
-
-    logger.info("BlajeChatBot: запускаем polling…")
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-# ----------------- Точка входа -----------------
-
-def _start_tg_in_thread():
-    import asyncio
-    asyncio.run(run_tg_polling())
+        await application.bot.set_webhook(
+            url=webhook_url,
+            allowed_updates=["message", "channel_post"],
+            max_connections=40,
+        )
+        me = await application.bot.get_me()
+        log.info("Webhook установлен: %s, бот: @%s", webhook_url, me.username)
+        log.info("Разрешённый канал(ы): %s", ", ".join(map(str, ALLOWED_SENDER_CHAT_IDS)))
+    except Exception as e:
+        log.exception("Не удалось установить webhook: %s", e)
 
 if __name__ == "__main__":
-    # Telegram в отдельном потоке, Flask — как web-сервис Render ("/" и "/health")
-    Thread(target=_start_tg_in_thread, daemon=True).start()
+    import asyncio
 
-    logger.info("Flask: стартуем на 0.0.0.0:%s", PORT)
-    flask_app.run(host="0.0.0.0", port=PORT)
+    # на Render требуется слушать 0.0.0.0 и порт из окружения
+    port = int(os.environ.get("PORT", "1000"))
+
+    # поднимаем PTB (без polling) и ставим webhook
+    asyncio.get_event_loop().create_task(application.initialize())
+    asyncio.get_event_loop().create_task(setup_webhook())
+    asyncio.get_event_loop().create_task(application.start())
+
+    # запускаем Flask (он принимает HTTPS от Render и проксит апдейты в PTB)
+    flask_app.run(host="0.0.0.0", port=port)
