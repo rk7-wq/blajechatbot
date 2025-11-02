@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 # ---------- Конфиг ----------
-token = os.environ["token"]                     # <-- ключ в нижнем регистре
+TOKEN = os.environ["token"]                     # <-- ключ в нижнем регистре
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
 
 # ID канала, от имени которого писать запрещаем.
@@ -45,7 +45,7 @@ flask_app = Flask(__name__)
 _last_warn_time_by_topic: dict[tuple[int, Optional[int]], float] = {}
 
 # ---------- Telegram Application ----------
-application: Application = ApplicationBuilder().token(token).build()
+application: Application = ApplicationBuilder().token(TOKEN).build()
 
 async def mod_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Удаляем сообщения, отправленные 'от имени канала' в группе-обсуждении канала
@@ -115,7 +115,7 @@ application.add_handler(MessageHandler(
 def health():
     return jsonify(ok=True)
 
-@flask_app.post(f"/telegram/{token}")
+@flask_app.post(f"/telegram/{TOKEN}")
 def telegram_webhook():
     """Точка входа для Telegram. Flask получает JSON и кладёт в очередь PTB."""
     try:
@@ -131,7 +131,7 @@ async def setup_webhook():
     if not PUBLIC_URL:
         log.error("PUBLIC_URL не задан. Укажи его в Render → Environment.")
         return
-    webhook_url = f"{PUBLIC_URL}/telegram/{token}"
+    webhook_url = f"{PUBLIC_URL}/telegram/{TOKEN}"
     try:
         await application.bot.delete_webhook(drop_pending_updates=True)
         await application.bot.set_webhook(
