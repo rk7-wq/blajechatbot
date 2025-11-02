@@ -1,10 +1,18 @@
-# app.py — Telegram Bot (python-telegram-bot v22.x) + Flask webhook
-# Render/Gunicorn-ready. Обновления обрабатываются напрямую через process_update.
+# app.py — Telegram Bot (python-telegram-bot v22.x) + Flask webhook (Render-ready)
+# Ключевые моменты:
+#  • Вебхук /webhook с секретом (X-Telegram-Bot-Api-Secret-Token)
+#  • Обработка апдейтов напрямую: application.process_update(...)
+#  • /start, /ping, эхо в ЛС
+#  • Удаление в группах: sender_chat / автофорварды и стоп-слова
+#  • Подробные логи всех типов апдейтов (для диагностики)
+#  • Аккуратное завершение PTB при остановке воркера
 
-import os, re, sys, asyncio, logging, threading, atexit
+import os, re, sys, asyncio, logging, threading, atexit, json
 from flask import Flask, request, abort
 from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes, filters
+from telegram.ext import (
+    Application, MessageHandler, CommandHandler, ContextTypes, filters
+)
 
 # ── ENV ──────────────────────────────────────────────────────────────────────
 TOKEN    = os.getenv("BOT_TOKEN", "").strip()
@@ -17,7 +25,8 @@ BANNED_RAW = os.getenv("BANNED", "casino, http://, https://, t.me/")
 LOGLEVEL   = os.getenv("LOGLEVEL", "INFO").upper()
 
 if not TOKEN or not BASE_URL:
-    print("❌ Set BOT_TOKEN and BASE_URL"); sys.exit(1)
+    print("❌ Set BOT_TOKEN and BASE_URL")
+    sys.exit(1)
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -36,8 +45,10 @@ def is_channel_style_group_message(m) -> bool:
     # Сообщение в группе, отправленное от имени канала / автоперенос из связанного канала
     return bool(getattr(m, "sender_chat", None)) or bool(getattr(m, "is_automatic_forward", False))
 
-def _short(s, n=200):
-    if not s: return ""
+def _short(s, n=500):
+    if s is None:
+        return ""
+    s = str(s)
     return s if len(s) <= n else s[:n] + "…"
 
 # ── Flask ────────────────────────────────────────────────────────────────────
@@ -46,10 +57,9 @@ flask_app = Flask(__name__)
 # ── PTB + event loop в отдельном потоке ─────────────────────────────────────
 loop = asyncio.new_event_loop()
 threading.Thread(target=loop.run_forever, daemon=True, name="ptb-loop").start()
-
 application = Application.builder().token(TOKEN).build()
 
-# ── Хэндлеры ─────────────────────────────────────────────────────────────────
+# ── Хэндлеры команд ─────────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("↪ /start chat=%s user=%s",
              update.effective_chat.id if update.effective_chat else None,
@@ -63,6 +73,7 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("↪ /ping chat=%s", update.effective_chat.id if update.effective_chat else None)
     await update.effective_message.reply_text("✅ Я на связи")
 
+# ── Хэндлеры сообщений ──────────────────────────────────────────────────────
 async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     m = update.effective_message
     txt = (m.text or m.caption or "")
@@ -70,7 +81,7 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
              m.chat_id,
              update.effective_user.id if update.effective_user else None,
              _short(txt))
-    # Эхо для диагностики (не эхо команд)
+    # Эхо (не эхо команд)
     if txt and not txt.startswith("/"):
         try:
             await context.bot.send_message(m.chat_id, f"Эхо: {_short(txt)}")
@@ -89,15 +100,12 @@ async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
              getattr(m, "is_automatic_forward", False),
              _short(txt))
 
-    # Удалить всё (тест прав)
     if DELETE_ALL:
         return await try_delete(context, m.chat_id, m.message_id, "DELETE_ALL")
 
-    # Сообщение «от имени канала» в группе
     if is_channel_style_group_message(m):
         return await try_delete(context, m.chat_id, m.message_id, "sender_chat/linked_channel")
 
-    # Бан-слова
     if is_banned(txt):
         return await try_delete(context, m.chat_id, m.message_id, "banned_text")
 
@@ -113,6 +121,28 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_banned(txt):
         return await try_delete(context, m.chat_id, m.message_id, "banned_text")
 
+# ── Хэндлеры для статусов/редактирований (диагностика) ──────────────────────
+async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    m = update.edited_message
+    log.info("✏️ EDITED_MESSAGE chat=%s txt=%r", m.chat_id if m else None,
+             _short(m.text if m else ""))
+
+async def on_edited_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    m = update.edited_channel_post
+    log.info("✏️ EDITED_CHANNEL_POST chat=%s txt=%r", m.chat_id if m else None,
+             _short(m.text if m else ""))
+
+async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.info("👤 CHAT_MEMBER chat=%s user=%s status_change",
+             update.effective_chat.id if update.effective_chat else None,
+             update.effective_user.id if update.effective_user else None)
+
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.info("🛡 MY_CHAT_MEMBER chat=%s user=%s bot_status_change",
+             update.effective_chat.id if update.effective_chat else None,
+             update.effective_user.id if update.effective_user else None)
+
+# ── Удаление сообщения ──────────────────────────────────────────────────────
 async def try_delete(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: int, reason: str):
     try:
         await ctx.bot.delete_message(chat_id, msg_id)
@@ -120,15 +150,20 @@ async def try_delete(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: int, 
     except Exception as e:
         log.warning("delete failed %s/%s: %s", chat_id, msg_id, e)
 
-# Регистрируем хэндлеры
+# ── Регистрация хэндлеров ────────────────────────────────────────────────────
 application.add_handler(CommandHandler("start", cmd_start))
 application.add_handler(CommandHandler("ping",  cmd_ping))
 application.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.StatusUpdate.ALL, on_private_message))
 application.add_handler(MessageHandler(filters.ChatType.GROUPS  & ~filters.StatusUpdate.ALL, on_group_message))
 application.add_handler(MessageHandler(filters.ChatType.CHANNEL & ~filters.StatusUpdate.ALL, on_channel_post))
+# Диагностические:
+application.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, on_edited_message))
+application.add_handler(MessageHandler(filters.UpdateType.EDITED_CHANNEL_POST, on_edited_channel_post))
+application.add_handler(MessageHandler(filters.StatusUpdate.CHAT_MEMBER, on_chat_member))
+application.add_handler(MessageHandler(filters.StatusUpdate.MY_CHAT_MEMBER, on_my_chat_member))
 
 # ── Webhook ──────────────────────────────────────────────────────────────────
-WEBHOOK_PATH = "/webhook"                                # совпадает с тем, что ставим в setWebhook
+WEBHOOK_PATH = "/webhook"                          # должен совпадать с getWebhookInfo
 WEBHOOK_URL  = f"{BASE_URL}{WEBHOOK_PATH}"
 
 async def setup_webhook():
@@ -150,7 +185,7 @@ async def setup_webhook():
     )
     log.info("✅ Webhook set: %s", WEBHOOK_URL)
 
-# Запускаем PTB на живом loop-е
+# Старт PTB на живом loop-е
 asyncio.run_coroutine_threadsafe(setup_webhook(), loop).result(timeout=30)
 
 # ── Flask routes ─────────────────────────────────────────────────────────────
@@ -160,23 +195,28 @@ def index():
 
 @flask_app.post(WEBHOOK_PATH)
 def telegram_webhook():
-    # Диагностика источника запроса и секрета
     ua = request.headers.get("User-Agent", "-")
     secret_hdr = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    log.info("➡️  /webhook POST ua=%s secret_match=%s", ua, "YES" if secret_hdr == SECRET else "NO")
+    secret_ok = (secret_hdr == SECRET)
+    # Пишем первые 2KB тела для диагностики (безопасно для обычных апдейтов)
+    try:
+        raw = request.get_data(cache=False, as_text=True) or ""
+        raw_preview = raw[:2048] + ("…" if len(raw) > 2048 else "")
+    except Exception:
+        raw_preview = "<no body>"
+    log.info("➡️  /webhook POST ua=%s secret_match=%s raw=%s", ua, "YES" if secret_ok else "NO", _short(raw_preview, 400))
 
-    if secret_hdr != SECRET:
+    if not secret_ok:
         log.warning("Forbidden webhook: wrong secret")
         abort(403)
 
     try:
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
-        # КЛЮЧЕВОЕ: обрабатываем апдейт напрямую (без update_queue)
+        # Обрабатываем апдейт НАПРЯМУЮ (без update_queue)
         asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
     except Exception as e:
         log.exception("webhook error: %s", e)
-        # даже при ошибке возвращаем 200, чтобы Telegram не дропал вебхук
         return "ok", 200
     return "ok", 200
 
@@ -196,5 +236,5 @@ atexit.register(_graceful_shutdown)
 
 if __name__ == "__main__":
     # Локально: python app.py
-    # На Render: используй gunicorn app:flask_app (см. ниже)
+    # На Render: см. Start command ниже
     flask_app.run(host="0.0.0.0", port=PORT)
