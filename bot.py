@@ -8,7 +8,7 @@ from aiohttp import web
 
 # ---- НАСТРОЙКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ----
 # Render автоматически устанавливает PORT.
-PORT = int(os.environ.get("PORT", 10000)) # Используем 10000 как стандарт для Web Service
+PORT = int(os.environ.get("PORT", 10000)) 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # Текст предупреждения
@@ -46,7 +46,8 @@ async def delete_channel_messages(message: Message):
         await message.delete()
         
         # 2. Отправляем предупреждение:
-        # Явно используем bot.send_message для указания message_thread_id
+        # Используем bot.send_message для явного указания message_thread_id.
+        # Это гарантирует, что ответ попадет в ветку комментариев.
         await bot.send_message(
             chat_id=message.chat.id,
             text=WARNING_TEXT,
