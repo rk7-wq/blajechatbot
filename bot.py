@@ -4,10 +4,12 @@ import logging
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.filters import CommandStart
+# Импортируем для создания фиктивного веб-сервера
+from aiohttp import web 
 
 # ---- НАСТРОЙКА ----
-# Токен бота. Render возьмет его из "Environment Variables"
-# НЕ ВПИСЫВАЙ ТОКЕН СЮДА В КОД
+# В Render переменная окружения PORT автоматически устанавливается.
+PORT = int(os.environ.get("PORT", 8080))
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # Текст твоего предупреждения
@@ -18,57 +20,64 @@ WARNING_TEXT = (
 )
 # ---------------------
 
-# Настройка логгирования (чтобы видеть в консоли Render, что бот работает)
 logging.basicConfig(level=logging.INFO)
 
-# Инициализация бота и диспетчера
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-
-# Хендлер на команду /start (просто для проверки, что бот жив)
+# Хендлеры (Остаются без изменений)
 @dp.message(CommandStart())
 async def send_welcome(message: Message):
     await message.reply("Бот-модератор запущен и готов к работе!")
 
-
-# 
-# !!! ГЛАВНЫЙ ХЕНДЛЕР !!!
-# 
-# Он сработает на ЛЮБОЕ сообщение (текст, фото, стикер)
-# у которого есть поле "sender_chat" (отправлено от имени канала).
-#
 @dp.message(F.sender_chat)
 async def delete_channel_messages(message: Message):
-    # Логгируем, что мы поймали такое сообщение
     logging.info(f"Поймано сообщение от канала: {message.sender_chat.title}")
     
     try:
-        # 1. Удаляем сообщение, написанное от имени канала
         await message.delete()
-        
-        # 2. Отправляем предупреждение в тот же чат
-        # message.answer() отвечает в тот же чат, откуда пришло сообщение
         await message.answer(WARNING_TEXT)
-        
         logging.info(f"Сообщение от {message.sender_chat.title} удалено, отправлено предупреждение.")
-    
     except Exception as e:
-        # Это может случиться, если у бота нет прав в чате
         logging.error(f"Ошибка: не удалось удалить сообщение или отправить ответ: {e}")
 
+# ----------------------------------------
+# !!! НОВЫЙ БЛОК ДЛЯ ОБХОДА Render !!!
+# ----------------------------------------
 
-# Функция запуска бота
-async def main():
-    # Пропускаем старые обновления, которые могли накопиться, пока бот был оффлайн
-    await bot.delete_webhook(drop_pending_updates=True)
-    # Запускаем опрос (polling)
-    await dp.start_polling(bot)
+# 1. Функция, которая просто отвечает на запрос, чтобы Render увидел порт.
+async def health_check(request):
+    return web.Response(text="Bot is running (via Polling)")
+
+# 2. Функция, которая запускает бота и веб-сервер
+async def start_bot_and_server():
+    # Запускаем бота на Polling как фоновую задачу
+    polling_task = asyncio.create_task(dp.start_polling(bot, skip_updates=True))
+    
+    # Запускаем фиктивный веб-сервер
+    app = web.Application()
+    # Регистрируем фиктивный хендлер, который Render будет "пинговать"
+    app.add_routes([web.get('/', health_check)])
+    
+    # Запускаем веб-сервер на порту, который требует Render
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    
+    logging.info(f"Web server started on port {PORT}. Polling running in background.")
+    
+    # Ждем завершения фоновой задачи (бота), хотя на практике она будет работать всегда.
+    await polling_task
 
 
 if __name__ == "__main__":
     if TOKEN is None:
-        logging.critical("Критическая ошибка: не найден TELEGRAM_TOKEN в переменных окружения!")
+        logging.critical("Критическая ошибка: не найден TELEGRAM_TOKEN!")
     else:
-        logging.info("Бот запускается...")
-        asyncio.run(main())
+        try:
+            logging.info("Бот запускается в режиме Web Service...")
+            # Запускаем асинхронную функцию
+            asyncio.run(start_bot_and_server())
+        except KeyboardInterrupt:
+            logging.info("Bot stopped.")
