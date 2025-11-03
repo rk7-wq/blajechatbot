@@ -11,6 +11,11 @@ from aiohttp import web
 PORT = int(os.environ.get("PORT", 10000)) 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
+# ID канала, который НЕ НУЖНО удалять (например, ваш основной канал)
+# ВАЖНО: Chat ID для каналов всегда отрицательный.
+# --- ИСПОЛЬЗУЕМ ВАШ РЕАЛЬНЫЙ ID: -1001786114762 ---
+ALLOWED_SENDER_CHATS = {-1001786114762, }
+
 # Текст предупреждения
 WARNING_TEXT = (
     "Сообщения от имени канала в этой группе запрещены и будут удаляться.\n"
@@ -38,25 +43,31 @@ async def send_welcome(message: Message):
 # 
 @dp.message(F.sender_chat)
 async def delete_channel_messages(message: Message):
+    channel_id = message.sender_chat.id
+    
+    # --- 1. ПРОВЕРКА НА ИСКЛЮЧЕНИЕ ---
+    if channel_id in ALLOWED_SENDER_CHATS:
+        # Теперь будет писать в лог, что канал пропущен, без удаления.
+        logging.info(f"Сообщение от разрешенного канала ID {channel_id} ({message.sender_chat.title}) пропущено.")
+        return # Выходим из функции, не удаляя и не отвечая.
+    # ----------------------------------
+
     # Логгируем параметры сообщения для диагностики
     logging.info(
         f"Поймано сообщение от канала: {message.sender_chat.title}. "
-        f"Message ID: {message.message_id}. "
-        f"Thread ID (комментарий): {message.message_thread_id}"
+        f"Channel ID: {channel_id}. "
+        f"Message ID: {message.message_id}."
     )
     
     try:
-        # 1. СНАЧАЛА ОТПРАВЛЯЕМ ПРЕДУПРЕЖДЕНИЕ (ответом на исходное сообщение)
-        # Это заставляет Telegram API разместить ответ в той же ветке/чате, 
-        # при этом сообщение message.message_id еще не удалено.
+        # 2. СНАЧАЛА ОТПРАВЛЯЕМ ПРЕДУПРЕЖДЕНИЕ (ответом на исходное сообщение)
         await bot.send_message(
             chat_id=message.chat.id,
             text=WARNING_TEXT,
-            reply_to_message_id=message.message_id, # Ключевой элемент для ответа в ветку/чат
-            # message_thread_id здесь не нужен, т.к. reply_to_message_id надежнее
+            reply_to_message_id=message.message_id, 
         )
         
-        # 2. ЗАТЕМ УДАЛЯЕМ СООБЩЕНИЕ
+        # 3. ЗАТЕМ УДАЛЯЕМ СООБЩЕНИЕ
         await message.delete()
         
         logging.info(f"Сообщение от {message.sender_chat.title} удалено, предупреждение отправлено.")
@@ -77,8 +88,12 @@ async def health_check(request):
 # Функция, которая запускает бота на Polling и фиктивный веб-сервер
 async def start_bot_and_server():
     
-    # 1. Сбрасываем все ожидающие обновления и старые подключения Polling.
-    await bot.delete_webhook(drop_pending_updates=True) 
+    # 1. Сброс старых подключений Polling. 
+    try:
+        await bot.delete_webhook(drop_pending_updates=True) 
+        logging.info("Успешно удален Webhook и сброшены ожидающие обновления.")
+    except Exception as e:
+        logging.warning(f"Ошибка при удалении Webhook: {e}")
 
     # 2. Запускаем Polling как фоновую задачу
     polling_task = asyncio.create_task(dp.start_polling(bot, skip_updates=True))
