@@ -4,7 +4,8 @@ import logging
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.filters import CommandStart
-from aiohttp import web # aiohttp по-прежнему используется для запуска веб-сервера
+from aiohttp import web 
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application # Новый импорт
 
 # ---- НАСТРОЙКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ И WEBHOOK ----
 # WEB_SERVER_HOST и WEB_SERVER_PORT - адрес и порт, которые слушает Render.
@@ -124,12 +125,27 @@ def start_bot_webhook():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
     
-    # Запускаем приложение aiohttp с диспетчером aiogram
+    # 1. Создаем AIOHTTP приложение
+    app = web.Application()
+    
+    # 2. Подключаем диспетчер aiogram к AIOHTTP приложению
+    # SimpleRequestHandler будет слушать наш WEBHOOK_PATH
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot
+    )
+    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+
+    # 3. Настраиваем приложение aiogram
+    setup_application(app, dp, bot=bot)
+    
     logging.info(f"🚀 Запуск бота в режиме Webhook на {WEB_SERVER_HOST}:{WEB_SERVER_PORT}...")
-    dp.run_app(
-        host=WEB_SERVER_HOST, 
-        port=WEB_SERVER_PORT,
-        path=WEBHOOK_PATH # Указываем путь, который будет слушать сервер
+    
+    # 4. Запуск веб-сервера
+    web.run_app(
+        app,
+        host=WEB_SERVER_HOST,
+        port=WEB_SERVER_PORT
     )
 
 if __name__ == "__main__":
