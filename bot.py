@@ -46,12 +46,14 @@ async def delete_channel_messages(message: Message):
         await message.delete()
         
         # 2. Отправляем предупреждение:
-        # message.answer(WARNING_TEXT) — в aiogram 3 это автоматически 
-        # отправляет ответ в ту же ветку/топик, откуда пришло сообщение, 
-        # если message_thread_id существует.
-        await message.answer(WARNING_TEXT)
+        # Явно используем bot.send_message для указания message_thread_id
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text=WARNING_TEXT,
+            message_thread_id=message.message_thread_id
+        )
         
-        logging.info(f"Сообщение от {message.sender_chat.title} удалено, отправлено предупреждение.")
+        logging.info(f"Сообщение от {message.sender_chat.title} удалено, отправлено предупреждение в ветку.")
     
     except Exception as e:
         # Обработка ошибок (например, если у бота нет прав)
