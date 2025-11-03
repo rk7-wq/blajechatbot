@@ -1,4 +1,4 @@
-# main.py — BlajeChatBot для Render (ASGI, 24/7, без сна)
+# main.py — BlajeChatBot для Render (ASGI, работает 24/7)
 import os
 import logging
 from quart import Quart, request, abort
@@ -9,7 +9,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 TOKEN = os.getenv("BOT_TOKEN")
 BASE_URL = os.getenv("RENDER_EXTERNAL_URL")  # Render ставит автоматически
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"{BASE_URL}{WEBHOST_PATH}"
+WEBHOOK_URL = f"{BASE_URL}{WEBHOOK_PATH}"  # ИСПРАВЛЕНО: было WEBHOST_PATH
 SECRET = os.getenv("WEBHOOK_SECRET", "supersecret123")
 
 # === ЛОГИ ===
@@ -30,7 +30,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Бот работает на Render!\n"
         "Удаляю сообщения от имени каналов в группах.\n"
-        "Дайте права: 'Удалять сообщения' и 'Отправлять сообщения'."
+        "Дайте права: Удалять сообщения + Отправлять сообщения."
     )
 
 async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -38,19 +38,17 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or not getattr(msg, "sender_chat", None):
         return
 
-    # Белый список (добавь ID каналов, которым можно писать)
-    ALLOWED = {-1001234567890}  # ← Замени на нужные ID
+    # Белый список каналов (добавь ID)
+    ALLOWED = set()  # ← Например: {-1001234567890}
     if msg.sender_chat.id in ALLOWED:
         return
 
-    # Кулдаун: не больше 1 предупреждения в 2 сек
+    # Кулдаун: 1 предупреждение каждые 2 сек
     key = (msg.chat_id, getattr(msg, "message_thread_id", 0))
     now = __import__('time').time()
     if not hasattr(handle_group, "last_warn"):
         handle_group.last_warn = {}
-    if now - handle_group.last_warn.get(key, 0) < 2:
-        pass
-    else:
+    if now - handle_group.last_warn.get(key, 0) >= 2:
         try:
             await context.bot.send_message(
                 chat_id=msg.chat_id,
@@ -65,11 +63,11 @@ async def handle_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Удаление
     try:
         await msg.delete()
-        log.info(f"Удалено: {msg.sender_chat.title or msg.sender_chat.id}")
+        log.info(f"Удалено сообщение от канала: {msg.sender_chat.id}")
     except Exception as e:
-        log.error(f"Не удалось удалить: {e}")
+        log.error(f"Ошибка удаления: {e}")
 
-# Регистрация хэндлеров
+# Регистрация
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.ChatType.GROUPS, handle_group))
 
@@ -82,31 +80,33 @@ async def webhook():
         data = await request.get_json()
         update = Update.de_json(data, application.bot)
         await application.process_update(update)
-        log.info(f"Update processed: {update.update_id}")
+        log.info(f"Обработано обновление: {update.update_id}")
     except Exception as e:
-        log.exception(f"Webhook error: {e}")
+        log.exception(f"Ошибка webhook: {e}")
         abort(400)
     return "OK", 200
 
-# === Дополнительные роуты ===
 @app.get("/")
 async def index():
-    return {"status": "ok", "webhook": WEBHOOK_URL, "service": "BlajeChatBot"}
+    return {"status": "ok", "webhook": WEBHOOK_URL}
 
 @app.get("/health")
 async def health():
     return "OK", 200
 
 # === Установка webhook ===
-async def setup():
+async def setup_webhook():
     await application.initialize()
     await application.start()
-    await application.bot.set_webhook(
-        url=WEBHOOK_URL,
-        secret_token=SECRET,
-        drop_pending_updates=True
-    )
-    log.info(f"Webhook установлен: {WEBHOOK_URL}")
+    try:
+        await application.bot.set_webhook(
+            url=WEBHOOK_URL,
+            secret_token=SECRET,
+            drop_pending_updates=True
+        )
+        log.info(f"Webhook установлен: {WEBHOOK_URL}")
+    except Exception as e:
+        log.error(f"Ошибка установки webhook: {e}")
 
 # === Запуск Hypercorn ===
 if __name__ == "__main__":
@@ -115,7 +115,8 @@ if __name__ == "__main__":
     import asyncio
 
     # Установка webhook
-    asyncio.get_event_loop().run_until_complete(setup())
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(setup_webhook())
 
     # Запуск сервера
     config = Config()
