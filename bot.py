@@ -34,7 +34,7 @@ async def send_welcome(message: Message):
 
 
 # 
-# !!! ГЛАВНЫЙ ХЕНДЛЕР: Удаление сообщений и ответ в ветку комментариев !!!
+# !!! ГЛАВНЫЙ ХЕНДЛЕР: Удаление сообщений и условный ответ в ветку комментариев !!!
 # 
 @dp.message(F.sender_chat)
 async def delete_channel_messages(message: Message):
@@ -48,24 +48,28 @@ async def delete_channel_messages(message: Message):
         # 1. Удаляем сообщение
         await message.delete()
         
-        # 2. Отправляем предупреждение:
-        # Используем bot.send_message для явного указания message_thread_id.
-        chat_id = message.chat.id
-        thread_id = message.message_thread_id
+        # 2. Подготовка аргументов для отправки сообщения
+        send_params = {
+            "chat_id": message.chat.id,
+            "text": WARNING_TEXT,
+        }
         
-        # Этот вызов отправит сообщение в основную группу, если thread_id=None,
-        # и в ветку (комментарии), если thread_id присутствует.
-        await bot.send_message(
-            chat_id=chat_id,
-            text=WARNING_TEXT,
-            message_thread_id=thread_id
-        )
+        # КОРРЕКЦИЯ: Добавляем message_thread_id ТОЛЬКО если он присутствует 
+        # (чтобы избежать ошибки "message thread not found").
+        if message.message_thread_id:
+            send_params["message_thread_id"] = message.message_thread_id
+            logging.info(f"Будет отправлено в ветку ID: {message.message_thread_id}")
+        else:
+            logging.info("message_thread_id отсутствует. Будет отправлено в основной чат.")
+
+        # 3. Отправляем предупреждение
+        await bot.send_message(**send_params) # Используем распаковку словаря
         
-        logging.info(f"Сообщение от {message.sender_chat.title} удалено, отправлено предупреждение в ветку.")
+        logging.info(f"Сообщение от {message.sender_chat.title} удалено, отправлено предупреждение.")
     
     except Exception as e:
-        # КРИТИЧЕСКИ ВАЖНО: Если здесь ошибка, это почти наверняка проблема с правами.
-        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось отправить ответ в чат/комментарии. Ошибка: {e}. Проверьте права администратора бота!")
+        # Логирование ошибок
+        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось отправить ответ после удаления сообщения. Ошибка: {e}.")
 
 
 # ----------------------------------------
