@@ -45,18 +45,17 @@ async def delete_channel_messages(message: Message):
         # 1. Удаляем сообщение
         await message.delete()
         
-        # 2. Отправляем предупреждение в ветку комментариев
-        # message_thread_id гарантирует, что ответ попадет в ту же ветку
-        await message.answer(
-            WARNING_TEXT, 
-            message_thread_id=message.message_thread_id
-        )
+        # 2. Отправляем предупреждение:
+        # message.answer(WARNING_TEXT) — в aiogram 3 это автоматически 
+        # отправляет ответ в ту же ветку/топик, откуда пришло сообщение, 
+        # если message_thread_id существует.
+        await message.answer(WARNING_TEXT)
         
         logging.info(f"Сообщение от {message.sender_chat.title} удалено, отправлено предупреждение.")
     
     except Exception as e:
         # Обработка ошибок (например, если у бота нет прав)
-        logging.error(f"Ошибка при обработке сообщения от канала: {e}")
+        logging.error(f"Ошибка при обработке сообщения от канала (после удаления): {e}")
 
 
 # ----------------------------------------
@@ -70,14 +69,13 @@ async def health_check(request):
 # Функция, которая запускает бота на Polling и фиктивный веб-сервер
 async def start_bot_and_server():
     
-    # !!! КОРРЕКЦИЯ ДЛЯ ИСПРАВЛЕНИЯ КОНФЛИКТА !!!
-    # Сбрасываем все ожидающие обновления (сообщения) и старые подключения Polling.
+    # 1. Сбрасываем все ожидающие обновления и старые подключения Polling.
     await bot.delete_webhook(drop_pending_updates=True) 
 
-    # Запускаем Polling как фоновую задачу
+    # 2. Запускаем Polling как фоновую задачу
     polling_task = asyncio.create_task(dp.start_polling(bot, skip_updates=True))
     
-    # Создаем и запускаем фиктивный веб-сервер
+    # 3. Создаем и запускаем фиктивный веб-сервер
     app = web.Application()
     app.add_routes([web.get('/', health_check)])
     
@@ -88,7 +86,7 @@ async def start_bot_and_server():
     
     logging.info(f"Web server started on port {PORT}. Polling running in background.")
     
-    # Ждем завершения задачи Polling
+    # 4. Ждем завершения задачи Polling
     await polling_task
 
 
