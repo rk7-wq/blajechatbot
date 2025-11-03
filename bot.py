@@ -8,7 +8,7 @@ from aiohttp import web
 
 # ---- НАСТРОЙКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ----
 # Render автоматически устанавливает PORT.
-PORT = int(os.environ.get("PORT", 8080))
+PORT = int(os.environ.get("PORT", 10000)) # Используем 10000 как стандарт для Web Service
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # Текст предупреждения
@@ -39,21 +39,20 @@ async def send_welcome(message: Message):
 @dp.message(F.sender_chat)
 async def delete_channel_messages(message: Message):
     # Логгируем, что мы поймали сообщение от имени канала
-    logging.info(f"Поймано сообщение от канала: {message.sender_chat.title} в чате ID: {message.chat.id}")
+    logging.info(f"Поймано сообщение от канала: {message.sender_chat.title}")
     
     try:
-        # 1. Удаляем сообщение, написанное от имени канала
+        # 1. Удаляем сообщение
         await message.delete()
         
-        # 2. Отправляем предупреждение:
-        # message_thread_id=message.message_thread_id гарантирует, что ответ 
-        # попадет в ту же ветку комментариев (топик).
+        # 2. Отправляем предупреждение в ветку комментариев
+        # message_thread_id гарантирует, что ответ попадет в ту же ветку
         await message.answer(
             WARNING_TEXT, 
             message_thread_id=message.message_thread_id
         )
         
-        logging.info(f"Сообщение от {message.sender_chat.title} удалено, отправлено предупреждение в ветку.")
+        logging.info(f"Сообщение от {message.sender_chat.title} удалено, отправлено предупреждение.")
     
     except Exception as e:
         # Обработка ошибок (например, если у бота нет прав)
@@ -61,18 +60,22 @@ async def delete_channel_messages(message: Message):
 
 
 # ----------------------------------------
-# БЛОК ДЛЯ WEB SERVICE НА RENDER (для предотвращения сна)
+# БЛОК ДЛЯ WEB SERVICE НА RENDER (для предотвращения сна и конфликтов)
 # ----------------------------------------
 
-# Фиктивная функция для ответа на HTTP-запрос (для UptimeRobot)
+# Фиктивная функция для ответа на HTTP-запрос (для Render и UptimeRobot)
 async def health_check(request):
     return web.Response(text="Bot is running (via Polling)")
 
 # Функция, которая запускает бота на Polling и фиктивный веб-сервер
 async def start_bot_and_server():
-    # Запускаем бота на Polling как фоновую задачу
-    polling_task = asyncio.create_task(bot.delete_webhook(drop_pending_updates=True))
-    polling_task = asyncio.create_task(dp.start_polling(bot))
+    
+    # !!! КОРРЕКЦИЯ ДЛЯ ИСПРАВЛЕНИЯ КОНФЛИКТА !!!
+    # Сбрасываем все ожидающие обновления (сообщения) и старые подключения Polling.
+    await bot.delete_webhook(drop_pending_updates=True) 
+
+    # Запускаем Polling как фоновую задачу
+    polling_task = asyncio.create_task(dp.start_polling(bot, skip_updates=True))
     
     # Создаем и запускаем фиктивный веб-сервер
     app = web.Application()
@@ -80,7 +83,6 @@ async def start_bot_and_server():
     
     runner = web.AppRunner(app)
     await runner.setup()
-    # Сервер слушает на '0.0.0.0' и порту, который требует Render
     site = web.TCPSite(runner, '0.0.0.0', PORT) 
     await site.start()
     
@@ -92,7 +94,6 @@ async def start_bot_and_server():
 
 if __name__ == "__main__":
     if TOKEN is None:
-        # Этого не должно произойти, если переменные окружения установлены правильно
         logging.critical("Критическая ошибка: не найден TELEGRAM_TOKEN в переменных окружения!")
     else:
         try:
