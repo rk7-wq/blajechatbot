@@ -34,7 +34,7 @@ async def send_welcome(message: Message):
 
 
 # 
-# !!! ГЛАВНЫЙ ХЕНДЛЕР: Удаление сообщений и ответ в ту же ветку (через reply_to_message_id) !!!
+# !!! ГЛАВНЫЙ ХЕНДЛЕР: Удаление сообщений и ответ в ту же ветку (используя message_thread_id) !!!
 # 
 @dp.message(F.sender_chat)
 async def delete_channel_messages(message: Message):
@@ -53,14 +53,15 @@ async def delete_channel_messages(message: Message):
         send_params = {
             "chat_id": message.chat.id,
             "text": WARNING_TEXT,
-            
-            # ✨ КОРРЕКЦИЯ: Используем message.message_id как reply_to_message_id. 
-            # Это заставляет Telegram API отвечать в ту же ветку, если это комментарий.
-            "reply_to_message_id": message.message_id, 
         }
         
-        # УДАЛЕНО: Условная логика для message_thread_id. 
-        # Теперь полагаемся на более надежный reply_to_message_id.
+        # ✨ ФИНАЛЬНАЯ КОРРЕКЦИЯ: ИСПОЛЬЗУЕМ message_thread_id, но НЕ reply_to_message_id.
+        # reply_to_message_id вызывает ошибку, потому что сообщение удалено.
+        if message.message_thread_id:
+            send_params["message_thread_id"] = message.message_thread_id
+            logging.info(f"Будет отправлено в ветку ID: {message.message_thread_id}")
+        else:
+            logging.info("message_thread_id отсутствует. Будет отправлено в основной чат.")
         
         # 3. Отправляем предупреждение
         await bot.send_message(**send_params)
