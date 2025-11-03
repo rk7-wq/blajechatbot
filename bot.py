@@ -38,8 +38,11 @@ async def send_welcome(message: Message):
 # 
 @dp.message(F.sender_chat)
 async def delete_channel_messages(message: Message):
-    # Логгируем, что мы поймали сообщение от имени канала
-    logging.info(f"Поймано сообщение от канала: {message.sender_chat.title}")
+    # Логгируем параметры сообщения для диагностики
+    logging.info(
+        f"Поймано сообщение от канала: {message.sender_chat.title}. "
+        f"Thread ID (комментарий): {message.message_thread_id}"
+    )
     
     try:
         # 1. Удаляем сообщение
@@ -47,18 +50,22 @@ async def delete_channel_messages(message: Message):
         
         # 2. Отправляем предупреждение:
         # Используем bot.send_message для явного указания message_thread_id.
-        # Это гарантирует, что ответ попадет в ветку комментариев.
+        chat_id = message.chat.id
+        thread_id = message.message_thread_id
+        
+        # Этот вызов отправит сообщение в основную группу, если thread_id=None,
+        # и в ветку (комментарии), если thread_id присутствует.
         await bot.send_message(
-            chat_id=message.chat.id,
+            chat_id=chat_id,
             text=WARNING_TEXT,
-            message_thread_id=message.message_thread_id
+            message_thread_id=thread_id
         )
         
         logging.info(f"Сообщение от {message.sender_chat.title} удалено, отправлено предупреждение в ветку.")
     
     except Exception as e:
-        # Обработка ошибок (например, если у бота нет прав)
-        logging.error(f"Ошибка при обработке сообщения от канала (после удаления): {e}")
+        # КРИТИЧЕСКИ ВАЖНО: Если здесь ошибка, это почти наверняка проблема с правами.
+        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось отправить ответ в чат/комментарии. Ошибка: {e}. Проверьте права администратора бота!")
 
 
 # ----------------------------------------
