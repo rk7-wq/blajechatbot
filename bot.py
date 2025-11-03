@@ -4,16 +4,23 @@ import logging
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.filters import CommandStart
-from aiohttp import web 
+from aiohttp import web # aiohttp по-прежнему используется для запуска веб-сервера
 
-# ---- НАСТРОЙКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ----
-# Render автоматически устанавливает PORT.
-PORT = int(os.environ.get("PORT", 10000)) 
+# ---- НАСТРОЙКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ И WEBHOOK ----
+# WEB_SERVER_HOST и WEB_SERVER_PORT - адрес и порт, которые слушает Render.
+WEB_SERVER_HOST = "0.0.0.0"
+WEB_SERVER_PORT = int(os.environ.get("PORT", 10000)) 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# ID канала, который НЕ НУЖНО удалять (например, ваш основной канал)
-# ВАЖНО: Chat ID для каналов всегда отрицательный.
-# --- ИСПОЛЬЗУЕМ ВАШ РЕАЛЬНЫЙ ID: -1001786114762 ---
+# PUBLIC_URL - полный публичный адрес сервиса Render. 
+# Эту переменную (TELEGRAM_WEBHOOK_URL) нужно установить в настройках Render.
+PUBLIC_URL = os.getenv("TELEGRAM_WEBHOOK_URL")
+
+# Путь, по которому Telegram будет отправлять обновления.
+WEBHOOK_PATH = f"/webhook/{TOKEN}"
+WEBHOOK_URL = PUBLIC_URL + WEBHOOK_PATH if PUBLIC_URL else None
+
+# ID канала, который НЕ НУЖНО удалять (ваш основной канал)
 ALLOWED_SENDER_CHATS = {-1001786114762, }
 
 # Текст предупреждения
@@ -22,7 +29,7 @@ WARNING_TEXT = (
     "Пожалуйста, пишите от своего личного профиля.\n"
     "Бот Модератор."
 )
-# ----------------------------------------
+# --------------------------------------------------
 
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO)
@@ -35,7 +42,7 @@ dp = Dispatcher()
 # Хендлер на команду /start
 @dp.message(CommandStart())
 async def send_welcome(message: Message):
-    await message.reply("Бот-модератор запущен и готов к работе!")
+    await message.reply("Бот-модератор запущен в режиме Webhook!")
 
 
 # 
@@ -47,12 +54,10 @@ async def delete_channel_messages(message: Message):
     
     # --- 1. ПРОВЕРКА НА ИСКЛЮЧЕНИЕ ---
     if channel_id in ALLOWED_SENDER_CHATS:
-        # Теперь будет писать в лог, что канал пропущен, без удаления.
         logging.info(f"Сообщение от разрешенного канала ID {channel_id} ({message.sender_chat.title}) пропущено.")
-        return # Выходим из функции, не удаляя и не отвечая.
+        return 
     # ----------------------------------
 
-    # Логгируем параметры сообщения для диагностики
     logging.info(
         f"Поймано сообщение от канала: {message.sender_chat.title}. "
         f"Channel ID: {channel_id}. "
@@ -78,47 +83,57 @@ async def delete_channel_messages(message: Message):
 
 
 # ----------------------------------------
-# БЛОК ДЛЯ WEB SERVICE НА RENDER (для предотвращения сна и конфликтов)
+# ГЛАВНАЯ ФУНКЦИЯ ЗАПУСКА WEBHOOK
 # ----------------------------------------
 
-# Фиктивная функция для ответа на HTTP-запрос (для Render и UptimeRobot)
-async def health_check(request):
-    return web.Response(text="Bot is running (via Polling)")
+async def on_startup(bot: Bot):
+    """Выполняется при запуске бота: устанавливает Webhook и сбрасывает обновления."""
+    if WEBHOOK_URL:
+        # Устанавливаем Webhook на Telegram API
+        # drop_pending_updates=True гарантирует, что старые сообщения не будут обработаны при запуске.
+        await bot.set_webhook(
+            url=WEBHOOK_URL, 
+            drop_pending_updates=True
+        )
+        logging.info(f"✅ Webhook установлен на: {WEBHOOK_URL}")
+    else:
+        # Этого не должно случиться, если TELEGRAM_WEBHOOK_URL установлен
+        logging.critical("❌ Переменная TELEGRAM_WEBHOOK_URL не установлена. Бот не может работать в режиме Webhook.")
+        # Завершаем сессию, чтобы не запустить Polling случайно
+        await bot.session.close()
+        raise EnvironmentError("WEBHOOK_URL is not configured.")
 
-# Функция, которая запускает бота на Polling и фиктивный веб-сервер
-async def start_bot_and_server():
-    
-    # 1. Сброс старых подключений Polling. 
-    try:
-        await bot.delete_webhook(drop_pending_updates=True) 
-        logging.info("Успешно удален Webhook и сброшены ожидающие обновления.")
-    except Exception as e:
-        logging.warning(f"Ошибка при удалении Webhook: {e}")
+async def on_shutdown(bot: Bot):
+    """Выполняется при остановке бота: удаляет Webhook."""
+    logging.info("🧹 Удаление Webhook...")
+    await bot.delete_webhook()
+    logging.info("❌ Webhook удален. Приложение остановлено.")
 
-    # 2. Запускаем Polling как фоновую задачу
-    polling_task = asyncio.create_task(dp.start_polling(bot, skip_updates=True))
+def start_bot_webhook():
+    """Запускает приложение aiogram/aiohttp в режиме Webhook."""
     
-    # 3. Создаем и запускаем фиктивный веб-сервер
-    app = web.Application()
-    app.add_routes([web.get('/', health_check)])
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT) 
-    await site.start()
-    
-    logging.info(f"Web server started on port {PORT}. Polling running in background.")
-    
-    # 4. Ждем завершения задачи Polling
-    await polling_task
-
-
-if __name__ == "__main__":
     if TOKEN is None:
         logging.critical("Критическая ошибка: не найден TELEGRAM_TOKEN в переменных окружения!")
-    else:
-        try:
-            logging.info("Бот запускается в режиме Web Service...")
-            asyncio.run(start_bot_and_server())
-        except KeyboardInterrupt:
-            logging.info("Bot stopped by KeyboardInterrupt.")
+        return
+
+    if PUBLIC_URL is None:
+        logging.critical("Критическая ошибка: не найдена TELEGRAM_WEBHOOK_URL в переменных окружения! Требуется для режима Webhook.")
+        return
+
+    # Регистрируем функции запуска и остановки
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+    
+    # Запускаем приложение aiohttp с диспетчером aiogram
+    logging.info(f"🚀 Запуск бота в режиме Webhook на {WEB_SERVER_HOST}:{WEB_SERVER_PORT}...")
+    dp.run_app(
+        host=WEB_SERVER_HOST, 
+        port=WEB_SERVER_PORT,
+        path=WEBHOOK_PATH # Указываем путь, который будет слушать сервер
+    )
+
+if __name__ == "__main__":
+    try:
+        start_bot_webhook()
+    except Exception as e:
+        logging.critical(f"Глобальная ошибка при запуске: {e}")
