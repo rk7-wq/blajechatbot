@@ -34,7 +34,7 @@ async def send_welcome(message: Message):
 
 
 # 
-# !!! ГЛАВНЫЙ ХЕНДЛЕР: Удаление сообщений и ответ в ту же ветку (используя message_thread_id) !!!
+# !!! ГЛАВНЫЙ ХЕНДЛЕР: Ответ (reply) в ветку, затем удаление исходного сообщения !!!
 # 
 @dp.message(F.sender_chat)
 async def delete_channel_messages(message: Message):
@@ -46,31 +46,24 @@ async def delete_channel_messages(message: Message):
     )
     
     try:
-        # 1. Удаляем сообщение
+        # 1. СНАЧАЛА ОТПРАВЛЯЕМ ПРЕДУПРЕЖДЕНИЕ (ответом на исходное сообщение)
+        # Это заставляет Telegram API разместить ответ в той же ветке/чате, 
+        # при этом сообщение message.message_id еще не удалено.
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text=WARNING_TEXT,
+            reply_to_message_id=message.message_id, # Ключевой элемент для ответа в ветку/чат
+            # message_thread_id здесь не нужен, т.к. reply_to_message_id надежнее
+        )
+        
+        # 2. ЗАТЕМ УДАЛЯЕМ СООБЩЕНИЕ
         await message.delete()
         
-        # 2. Подготовка аргументов для отправки сообщения
-        send_params = {
-            "chat_id": message.chat.id,
-            "text": WARNING_TEXT,
-        }
-        
-        # ✨ ФИНАЛЬНАЯ КОРРЕКЦИЯ: ИСПОЛЬЗУЕМ message_thread_id, но НЕ reply_to_message_id.
-        # reply_to_message_id вызывает ошибку, потому что сообщение удалено.
-        if message.message_thread_id:
-            send_params["message_thread_id"] = message.message_thread_id
-            logging.info(f"Будет отправлено в ветку ID: {message.message_thread_id}")
-        else:
-            logging.info("message_thread_id отсутствует. Будет отправлено в основной чат.")
-        
-        # 3. Отправляем предупреждение
-        await bot.send_message(**send_params)
-        
-        logging.info(f"Сообщение от {message.sender_chat.title} удалено, отправлено предупреждение.")
+        logging.info(f"Сообщение от {message.sender_chat.title} удалено, предупреждение отправлено.")
     
     except Exception as e:
         # Логирование ошибок
-        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось отправить ответ после удаления сообщения. Ошибка: {e}.")
+        logging.error(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось отправить ответ/удалить сообщение. Ошибка: {e}.")
 
 
 # ----------------------------------------
