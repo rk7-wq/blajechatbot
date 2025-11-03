@@ -84,6 +84,15 @@ async def delete_channel_messages(message: Message):
 
 
 # ----------------------------------------
+# Health Check Handler (НОВАЯ ФУНКЦИЯ)
+# ----------------------------------------
+async def health_check(request: web.Request):
+    """Отвечает 200 OK на запросы к корневому пути, чтобы Render не считал сервис нерабочим."""
+    return web.Response(text="Bot is alive!", status=200)
+# ----------------------------------------
+
+
+# ----------------------------------------
 # ГЛАВНАЯ ФУНКЦИЯ ЗАПУСКА WEBHOOK
 # ----------------------------------------
 
@@ -113,6 +122,8 @@ async def on_shutdown(bot: Bot):
 def start_bot_webhook():
     """Запускает приложение aiogram/aiohttp в режиме Webhook."""
     
+    # ФИКСИРОВАННЫЙ КОММЕНТАРИЙ ДЛЯ ОБНОВЛЕНИЯ ХЕША ФАЙЛА (Fix for run_app error)
+    
     if TOKEN is None:
         logging.critical("Критическая ошибка: не найден TELEGRAM_TOKEN в переменных окружения!")
         return
@@ -128,7 +139,10 @@ def start_bot_webhook():
     # 1. Создаем AIOHTTP приложение
     app = web.Application()
     
-    # 2. Подключаем диспетчер aiogram к AIOHTTP приложению
+    # 2. ДОБАВЛЯЕМ ОБРАБОТЧИК ДЛЯ КОРНЕВОГО ПУТИ (HEALTH CHECK)
+    app.router.add_get("/", health_check) 
+    
+    # 3. Подключаем диспетчер aiogram к AIOHTTP приложению
     # SimpleRequestHandler будет слушать наш WEBHOOK_PATH
     webhook_requests_handler = SimpleRequestHandler(
         dispatcher=dp,
@@ -136,12 +150,12 @@ def start_bot_webhook():
     )
     webhook_requests_handler.register(app, path=WEBHOOK_PATH)
 
-    # 3. Настраиваем приложение aiogram
+    # 4. Настраиваем приложение aiogram
     setup_application(app, dp, bot=bot)
     
     logging.info(f"🚀 Запуск бота в режиме Webhook на {WEB_SERVER_HOST}:{WEB_SERVER_PORT}...")
     
-    # 4. Запуск веб-сервера
+    # 5. Запуск веб-сервера (это правильная функция)
     web.run_app(
         app,
         host=WEB_SERVER_HOST,
